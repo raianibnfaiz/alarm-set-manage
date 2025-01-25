@@ -3,129 +3,107 @@ package com.bjit.alarmmanager
 import android.annotation.SuppressLint
 import android.app.AlarmManager
 import android.app.PendingIntent
-import android.content.Context
 import android.content.Intent
-import android.net.Uri
-import android.os.Build
 import android.os.Bundle
-import android.provider.MediaStore
-import android.util.Log
-import android.widget.Button
-import android.widget.TimePicker
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.recyclerview.widget.LinearLayoutManager
+import com.google.android.material.floatingactionbutton.FloatingActionButton
+import com.google.firebase.crashlytics.buildtools.reloc.com.google.common.reflect.TypeToken
+
 import java.util.*
 
 class MainActivity : AppCompatActivity() {
 
-    lateinit var btnSetAlarm: Button
-    lateinit var btnSelectAudio: Button
-    lateinit var timePicker: TimePicker
+    private val alarms = mutableListOf<Alarm>() // List of alarms
 
-    private val PICK_AUDIO_REQUEST_CODE = 1234
-    private var selectedAudioUri: Uri? = null
-
-    @SuppressLint("MissingInflatedId")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        title = "Alarm App"
 
-        timePicker = findViewById(R.id.timePicker)
-        btnSetAlarm = findViewById(R.id.buttonAlarm)
-        btnSelectAudio = findViewById(R.id.btnSelectAudio)
 
-        btnSelectAudio.setOnClickListener {
-            pickCustomAudio()
+        // Handle Floating Action Button Click
+        findViewById<FloatingActionButton>(R.id.fab).setOnClickListener {
+            openAddAlarmBottomSheet()
         }
 
-        btnSetAlarm.setOnClickListener {
-            val calendar: Calendar = Calendar.getInstance()
-            if (Build.VERSION.SDK_INT >= 23) {
-                calendar.set(
-                    calendar.get(Calendar.YEAR),
-                    calendar.get(Calendar.MONTH),
-                    calendar.get(Calendar.DAY_OF_MONTH),
-                    timePicker.hour,
-                    timePicker.minute,
-                    0
-                )
-            } else {
-                calendar.set(
-                    calendar.get(Calendar.YEAR),
-                    calendar.get(Calendar.MONTH),
-                    calendar.get(Calendar.DAY_OF_MONTH),
-                    timePicker.currentHour,
-                    timePicker.currentMinute,
-                    0
-                )
-            }
-            setAlarm(calendar.timeInMillis)
+        // Load saved alarms (if any)
+        loadAlarms()
+    }
+
+    // Function to open the BottomSheet for adding alarms
+    private fun openAddAlarmBottomSheet() {
+        val addAlarmBottomSheet = AddAlarmBottomSheet { alarmTime ->
+            // Callback when user selects alarm time and clicks "Save"
+            createAndSaveAlarm(alarmTime.timeInMillis)
         }
+        addAlarmBottomSheet.show(supportFragmentManager, "AddAlarmBottomSheet")
     }
 
-    private fun pickCustomAudio() {
-        val intent = Intent(Intent.ACTION_PICK, MediaStore.Audio.Media.EXTERNAL_CONTENT_URI)
-        intent.type = "audio/*"
-        startActivityForResult(intent, PICK_AUDIO_REQUEST_CODE)
+    // Create a new alarm and save it
+    private fun createAndSaveAlarm(timeInMillis: Long) {
+        val alarmId = System.currentTimeMillis().toInt() // Unique ID
+        val alarm = Alarm(alarmId, timeInMillis)
+
+        setAlarm(alarm) // Schedule the alarm
+        alarms.add(alarm)
+
+
+        saveAlarms(alarms) // Persist alarms
     }
 
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == PICK_AUDIO_REQUEST_CODE && resultCode == RESULT_OK && data != null) {
-            // Get the selected audio URI
-            selectedAudioUri = data.data
-            saveAudioUri(selectedAudioUri)
-            Toast.makeText(this, "Custom Alarm Tone Selected!", Toast.LENGTH_SHORT).show()
-        }
-    }
-
-    private fun saveAudioUri(uri: Uri?) {
-        val sharedPreferences = getSharedPreferences("AlarmAppPrefs", Context.MODE_PRIVATE)
-        val editor = sharedPreferences.edit()
-        if (uri != null) {
-            editor.putString("CUSTOM_ALARM_URI", uri.toString())  // Save valid custom URI
-        } else {
-            editor.remove("CUSTOM_ALARM_URI")  // Remove any previously saved URI, reset to default
-        }
-        editor.apply()
-    }
-
-    private fun getSavedAudioUri(): Uri? {
-        val sharedPreferences = getSharedPreferences("AlarmAppPrefs", Context.MODE_PRIVATE)
-        val uriString = sharedPreferences.getString("CUSTOM_ALARM_URI", null)
-        return if (uriString != null) Uri.parse(uriString) else null
-    }
-
-    @SuppressLint("ScheduleExactAlarm")
-    private fun setAlarm(timeInMillis: Long) {
-        val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
+    // Cancel an alarm
+    private fun cancelAlarm(alarmId: Int) {
+        val alarmManager = getSystemService(ALARM_SERVICE) as AlarmManager
         val intent = Intent(this, MyAlarm::class.java)
+        val pendingIntent = PendingIntent.getBroadcast(
+            this, alarmId, intent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        alarmManager.cancel(pendingIntent)
+        pendingIntent.cancel()
 
-        // Pass the saved custom alarm tone URI (or none)
-        val customAudioUri = getSavedAudioUri()
-        if (customAudioUri != null) {
-            // Custom alarm tone selected
-            intent.putExtra("ALARM_AUDIO_URI", customAudioUri.toString())
-        } else {
-            // No custom alarm tone, fallback to default
-            intent.putExtra("ALARM_AUDIO_URI", R.raw.default_alarm)  // Pass empty string to indicate no custom tone
-        }
+        alarms.removeIf { it.id == alarmId }
+        saveAlarms(alarms)
+
+        Toast.makeText(this, "Alarm Cancelled", Toast.LENGTH_SHORT).show()
+    }
+
+    // Set an alarm using AlarmManager
+    @SuppressLint("ScheduleExactAlarm")
+    private fun setAlarm(alarm: Alarm) {
+        val alarmManager = getSystemService(ALARM_SERVICE) as AlarmManager
+        val intent = Intent(this, MyAlarm::class.java)
+        intent.putExtra("ALARM_ID", alarm.id)
 
         val pendingIntent = PendingIntent.getBroadcast(
-            this,
-            0,
-            intent,
+            this, alarm.id, intent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
         alarmManager.setExactAndAllowWhileIdle(
             AlarmManager.RTC_WAKEUP,
-            timeInMillis,
+            alarm.timeInMillis,
             pendingIntent
         )
+    }
 
-        Toast.makeText(this, "Alarm is set!", Toast.LENGTH_SHORT).show()
+    // Save alarms to SharedPreferences
+    private fun saveAlarms(alarms: List<Alarm>) {
+        val sharedPreferences = getSharedPreferences("AlarmAppPrefs", MODE_PRIVATE)
+        val editor = sharedPreferences.edit()
+
+        editor.apply()
+    }
+
+    // Load alarms from SharedPreferences
+    private fun loadAlarms() {
+        val sharedPreferences = getSharedPreferences("AlarmAppPrefs", MODE_PRIVATE)
+        val json = sharedPreferences.getString("alarms", null) ?: return
+        val type = object : TypeToken<List<Alarm>>() {}.type
+
+        alarms.clear()
+
     }
 }
